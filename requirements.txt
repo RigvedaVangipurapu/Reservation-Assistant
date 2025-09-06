@@ -1,0 +1,97 @@
+# Badminton Court Booking Agent - Dependencies
+# ============================================
+# This file contains all the Python packages required to run the
+# Badminton Court Booking Agent system.
+
+# Core Dependencies
+# -----------------
+# Playwright for browser automation and web scraping
+playwright>=1.40.0
+
+# Google Generative AI for intelligent decision-making
+google-generativeai>=0.3.0
+
+# Streamlit for the web interface
+streamlit==1.12.0
+
+# Altair for Streamlit compatibility (specific version for Python 3.9.7)
+altair==4.2.2
+
+# Standard Library Extensions
+# ---------------------------
+# These packages extend Python's standard library functionality
+
+# For enhanced data structures and type hints
+typing-extensions>=4.0.0
+
+# For better date/time handling
+python-dateutil>=2.8.0
+
+# For environment variable management
+python-dotenv>=1.0.0
+
+# For HTTP requests (if needed for future features)
+requests>=2.28.0
+
+# For JSON handling and data serialization
+jsonschema>=4.0.0
+
+# Development Dependencies (Optional)
+# -----------------------------------
+# These packages are useful for development and testing
+
+# For code formatting and linting
+black>=23.0.0
+flake8>=6.0.0
+
+# For type checking
+mypy>=1.0.0
+
+# For testing
+pytest>=7.0.0
+pytest-playwright>=0.4.0
+
+# For documentation generation
+sphinx>=6.0.0
+sphinx-rtd-theme>=1.2.0
+
+# System Requirements
+# ===================
+# Python: 3.9.7 or higher
+# Operating System: macOS, Linux, or Windows
+# Memory: 512MB RAM minimum, 1GB recommended
+# Storage: 100MB for dependencies, 500MB for browser binaries
+
+# Installation Instructions
+# =========================
+# 1. Create virtual environment:
+#    python3 -m venv badminton_agent_env
+#    source badminton_agent_env/bin/activate  # On Windows: badminton_agent_env\Scripts\activate
+#
+# 2. Install dependencies:
+#    pip install -r requirements.txt
+#
+# 3. Install Playwright browsers:
+#    playwright install chromium
+#
+# 4. Set up environment variables:
+#    export GOOGLE_API_KEY="your_api_key_here"
+#
+# 5. Run the application:
+#    streamlit run app.py
+
+# Version Compatibility
+# =====================
+# This requirements.txt is specifically tested with:
+# - Python 3.9.7
+# - macOS 14.6.0 (Darwin)
+# - Streamlit 1.12.0 (compatible with Python 3.9.7)
+# - Playwright 1.40.0
+# - Google Generative AI 0.3.0
+
+# Notes
+# =====
+# - Streamlit 1.12.0 is used instead of newer versions due to Python 3.9.7 compatibility
+# - Altair 4.2.2 is required for Streamlit 1.12.0 compatibility
+# - Playwright requires additional browser installation after pip install
+# - Google API key must be set as environment variable
