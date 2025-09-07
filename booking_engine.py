@@ -147,8 +147,12 @@ class RequestParser:
             r'(\d{1,2})/(\d{1,2})',
             r'(\d{1,2})/(\d{1,2})/(\d{4})',
             r'(\d{4})-(\d{2})-(\d{2})',
+            # Patterns with year
             r'(\d{1,2})(?:st|nd|rd|th)?\s+(january|february|march|april|may|june|july|august|september|october|november|december|jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec)\s+(\d{4})',
             r'(january|february|march|april|may|june|july|august|september|october|november|december|jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec)\s+(\d{1,2})(?:st|nd|rd|th)?\s*,?\s*(\d{4})',
+            # Patterns without year (default to 2025)
+            r'(\d{1,2})(?:st|nd|rd|th)?\s+(january|february|march|april|may|june|july|august|september|october|november|december|jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec)',
+            r'(january|february|march|april|may|june|july|august|september|october|november|december|jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec)\s+(\d{1,2})(?:st|nd|rd|th)?',
         ]
         
         self.court_patterns = [
@@ -157,17 +161,11 @@ class RequestParser:
         ]
     
     def parse(self, request: str) -> BookingRequest:
-        """Parse natural language request into structured data"""
+        """Parse natural language request into structured data - let AI handle everything"""
         request_lower = request.lower()
         
-        # Parse time
-        preferred_time = self._extract_time(request_lower)
-        
-        # Parse date
-        preferred_date = self._extract_date(request_lower)
-        
-        # Parse court
-        preferred_court = self._extract_court(request_lower)
+        # Let AI handle ALL parsing - no regex patterns
+        # Just pass the raw request to AI for complete understanding
         
         # Determine strategy from keywords
         strategy = BookingStrategy.SMART_FALLBACK
@@ -181,13 +179,34 @@ class RequestParser:
         if any(word in request_lower for word in ['just book', 'automatically', 'book immediately']):
             interaction_mode = InteractionMode.AUTOMATED
         
+        # Extract date from request using AI
+        # The raw request will be passed to the agent's AI-powered date parser
+        # We'll let the agent handle the actual date parsing
+        
+        # Extract time and court preferences
+        # Look for time patterns like "5pm", "after 5pm", "from 5pm"
+        time_match = re.search(r'(?:after|from|at)?\s*(\d{1,2}(?::\d{2})?\s*(?:am|pm))', request_lower)
+        preferred_time = time_match.group(1) if time_match else None
+        
+        # Check if it's "after" or "from" a time
+        is_after_time = bool(re.search(r'(?:after|from)\s+\d{1,2}(?::\d{2})?\s*(?:am|pm)', request_lower))
+        
+        # Create metadata
+        metadata = {}
+        if is_after_time and preferred_time:
+            metadata["after_time"] = preferred_time
+        
+        court_match = re.search(r'court\s*#?\s*(\d+)', request_lower)
+        preferred_court = f"Court #{court_match.group(1)}" if court_match else None
+        
         return BookingRequest(
-            raw_request=request,
-            preferred_date=preferred_date,
-            preferred_time=preferred_time,
-            preferred_court=preferred_court,
+            raw_request=request,  # Pass the full request for AI parsing
+            preferred_date=None,  # Let agent's AI handle date parsing
+            preferred_time=preferred_time,  # Basic time extraction
+            preferred_court=preferred_court,  # Basic court extraction
             strategy=strategy,
-            interaction_mode=interaction_mode
+            interaction_mode=interaction_mode,
+            metadata=metadata  # Pass metadata with after_time if present
         )
     
     def _extract_time(self, text: str) -> Optional[str]:
@@ -249,16 +268,34 @@ class RequestParser:
                         if month_num:
                             # Remove ordinal suffixes (st, nd, rd, th)
                             day = re.sub(r'(st|nd|rd|th)', '', day)
+                            # If no year provided, default to 2025
+                            if not year:
+                                year = "2025"
                             return f"{year}-{month_num:02d}-{int(day):02d}"
+                    
+                    elif len(groups) == 2 and any(month in pattern for month in months.keys()):
+                        # Handle "9th September" or "September 9th" (no year - default to 2025)
+                        if pattern.startswith(r'(\d{1,2})'):
+                            # "9th September" format
+                            day, month_name = groups
+                        else:
+                            # "September 9th" format  
+                            month_name, day = groups
+                        
+                        month_num = months.get(month_name.lower())
+                        if month_num:
+                            # Remove ordinal suffixes (st, nd, rd, th)
+                            day = re.sub(r'(st|nd|rd|th)', '', day)
+                            # Default to 2025 when no year provided
+                            return f"2025-{month_num:02d}-{int(day):02d}"
                     
                     elif len(groups) == 3 and groups[2]:  # MM/DD/YYYY
                         month, day, year = groups
                         return f"{year}-{int(month):02d}-{int(day):02d}"
                     
-                    elif len(groups) == 2:  # MM/DD (current year)
+                    elif len(groups) == 2:  # MM/DD (default to 2025)
                         month, day = groups
-                        current_year = datetime.now().year
-                        return f"{current_year}-{int(month):02d}-{int(day):02d}"
+                        return f"2025-{int(month):02d}-{int(day):02d}"
                     
                     elif len(groups) == 3 and '-' in text:  # YYYY-MM-DD
                         year, month, day = groups
@@ -305,33 +342,63 @@ class RuleBasedDecisionEngine(DecisionEngine):
     def find_best_slots(self, 
                        request: BookingRequest, 
                        available_slots: List[TimeSlot]) -> List[TimeSlot]:
-        """Find best slots using rule-based logic"""
+        """Use AI to find best matching slots based on user's request"""
         
         if not available_slots:
             return []
         
-        # Filter by date if specified
-        if request.preferred_date:
-            available_slots = [s for s in available_slots if s.date == request.preferred_date]
+        # Format slots for AI
+        slots_text = []
+        for slot in available_slots:
+            slots_text.append(f"- {slot.court} at {slot.time_range} on {slot.date}")
         
-        # Filter by court if specified
-        if request.preferred_court:
-            available_slots = [s for s in available_slots if request.preferred_court.lower() in s.court.lower()]
+        # Create prompt for AI
+        prompt = f"""
+        User Request: "{request.raw_request}"
         
-        # Score slots based on time preference
-        if request.preferred_time:
-            scored_slots = []
-            for slot in available_slots:
-                score = self._calculate_time_score(slot, request.preferred_time, request.flexibility_minutes)
-                if score > 0:  # Only include slots within flexibility range
-                    scored_slots.append((slot, score))
+        Available Slots:
+        {chr(10).join(slots_text)}
+        
+        Based on the user's request, select the most suitable slots. Consider:
+        1. Date preferences (explicit or implied)
+        2. Time preferences (specific times, "after X", "evening", etc.)
+        3. Court preferences (if mentioned)
+        4. Duration preferences (if mentioned)
+        
+        Return ONLY the exact slot text for the best matches (max 5 slots), one per line.
+        Example return format:
+        Court #1 at 7:00 PM–8:00 PM on 2025-09-10
+        Court #2 at 7:00 PM–8:00 PM on 2025-09-10
+        
+        Selected slots:
+        """
+        
+        try:
+            # Get AI's selection
+            response = self.model.generate_content(prompt)
+            selected_texts = response.text.strip().split('\n')
             
-            # Sort by score (higher is better)
-            scored_slots.sort(key=lambda x: x[1], reverse=True)
-            return [slot for slot, score in scored_slots[:request.max_alternatives]]
-        
-        # If no time preference, return first available slots
-        return available_slots[:request.max_alternatives]
+            # Match selected texts back to TimeSlot objects
+            selected_slots = []
+            for text in selected_texts:
+                text = text.strip()
+                if not text:
+                    continue
+                    
+                # Find matching slot
+                for slot in available_slots:
+                    slot_text = f"{slot.court} at {slot.time_range} on {slot.date}"
+                    if text in slot_text or slot_text in text:
+                        selected_slots.append(slot)
+                        break
+            
+            print(f"🤖 AI selected {len(selected_slots)} slots based on request")
+            return selected_slots[:request.max_alternatives]
+            
+        except Exception as e:
+            print(f"⚠️ AI slot selection failed: {e}")
+            # Fallback to first few slots
+            return available_slots[:request.max_alternatives]
     
     def _calculate_time_score(self, slot: TimeSlot, preferred_time: str, flexibility_minutes: int) -> float:
         """Calculate how well a slot matches the preferred time"""
@@ -387,12 +454,69 @@ class AIDecisionEngine(DecisionEngine):
     def find_best_slots(self, 
                        request: BookingRequest, 
                        available_slots: List[TimeSlot]) -> List[TimeSlot]:
-        """Use AI to find best matching slots"""
+        """Use AI to find best matching slots based on user's request"""
         
-        # For now, fallback to rule-based logic
-        # In hybrid mode, this would use AI reasoning
-        rule_engine = RuleBasedDecisionEngine()
-        return rule_engine.find_best_slots(request, available_slots)
+        if not available_slots:
+            return []
+        
+        # Format slots for AI
+        slots_text = []
+        for slot in available_slots:
+            slots_text.append(f"- {slot.court} at {slot.time_range} on {slot.date}")
+        
+        # Create prompt for AI
+        prompt = f"""
+        You are a badminton court booking assistant. Find the best matching slots for this request.
+        
+        User Request: "{request.raw_request}"
+        
+        Available Slots:
+        {chr(10).join(slots_text)}
+        
+        CRITICAL REQUIREMENTS:
+        1. Return ONLY the exact slot text for the best matches (max 5 slots), one per line
+        2. Match the exact format: "Court #X at H:MM AM/PM–H:MM AM/PM on YYYY-MM-DD"
+        3. STRICTLY follow time preferences:
+           - If user says "after X", ONLY show slots that start after that time
+           - If user says "evening", show slots after 5 PM
+           - If user says "morning", show slots before 12 PM
+           - If user says "afternoon", show slots between 12 PM and 5 PM
+        4. Sort slots by best match first (closest to requested time)
+        5. Return NOTHING ELSE - no explanations or extra text
+        
+        Example return format:
+        Court #1 at 7:00 PM–8:00 PM on 2025-09-10
+        Court #2 at 7:00 PM–8:00 PM on 2025-09-10
+        
+        Selected slots:
+        """
+        
+        try:
+            # Get AI's selection
+            response = self.model.generate_content(prompt)
+            selected_texts = response.text.strip().split('\n')
+            
+            # Match selected texts back to TimeSlot objects
+            selected_slots = []
+            for text in selected_texts:
+                text = text.strip()
+                if not text:
+                    continue
+                    
+                # Find matching slot
+                for slot in available_slots:
+                    slot_text = f"{slot.court} at {slot.time_range} on {slot.date}"
+                    if text in slot_text or slot_text in text:
+                        selected_slots.append(slot)
+                        break
+            
+            print(f"🤖 AI selected {len(selected_slots)} slots based on request")
+            return selected_slots[:request.max_alternatives]
+            
+        except Exception as e:
+            print(f"⚠️ AI slot selection failed: {e}")
+            # Fallback to first few slots
+            return available_slots[:request.max_alternatives]
     
     def should_auto_book(self, request: BookingRequest, best_slot: TimeSlot) -> bool:
         """Use AI to decide on auto-booking"""
@@ -505,12 +629,36 @@ class BookingWorkflow:
             if not nav_result["success"]:
                 return []
         
-        # Change date if specified
-        if request.preferred_date:
-            date_result = self.agent.change_date(target_date=request.preferred_date)
-            if not date_result["success"]:
-                # Try relative date
-                date_result = self.agent.change_date(date=request.preferred_date)
+        # Extract date using AI
+        # First, try to extract just the date part from the request
+        date_text = ""
+        request_lower = request.raw_request.lower()
+        
+        # Look for date-related parts in the request
+        date_indicators = [
+            "today", "tomorrow", "next", "on", "for",
+            "jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec",
+            "monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"
+        ]
+        
+        words = request_lower.split()
+        for i, word in enumerate(words):
+            if any(indicator in word for indicator in date_indicators):
+                # Take this word and the next few words as the date part
+                date_text = " ".join(words[i:i+4])
+                break
+            elif word.replace("th", "").replace("st", "").replace("nd", "").replace("rd", "").isdigit():
+                # Take this word and the next few words as the date part
+                date_text = " ".join(words[i:i+3])
+                break
+        
+        # If no date part found, use the whole request
+        if not date_text:
+            date_text = request.raw_request
+        
+        # Let AI parse the date
+        print(f"🔍 Extracting date from: '{date_text}'")
+        date_result = self.agent.change_date(date=date_text)
         
         # Get slots
         slots_result = self.agent.get_available_slots()
@@ -536,11 +684,14 @@ class BookingWorkflow:
                     start_time = time_range
                     end_time = time_range
                 
+                # Get the correct date from the agent's current state
+                current_date = self.agent.current_state.get("current_date", datetime.now().strftime("%Y-%m-%d"))
+                
                 time_slot = TimeSlot(
                     court=slot_data.get("court", "Unknown Court"),
                     start_time=start_time.strip(),
                     end_time=end_time.strip(),
-                    date=request.preferred_date or datetime.now().strftime("%Y-%m-%d"),
+                    date=current_date,
                     available=True
                 )
                 time_slots.append(time_slot)
@@ -625,14 +776,16 @@ class BookingWorkflow:
 class EnhancedBookingAgent:
     """Enhanced agent with advanced booking logic"""
     
-    def __init__(self, base_agent, use_ai_engine: bool = False):
+    def __init__(self, base_agent, use_ai_engine: bool = True):  # Default to using AI
         self.base_agent = base_agent
         self.parser = RequestParser()
         
-        # Choose decision engine
-        if use_ai_engine and hasattr(base_agent, 'model'):
+        # Always try to use AI first
+        if hasattr(base_agent, 'model') and base_agent.model:
+            print("🤖 Using AI-powered decision engine")
             self.decision_engine = AIDecisionEngine(base_agent.model)
         else:
+            print("⚠️ AI model not available, using rule-based engine")
             self.decision_engine = RuleBasedDecisionEngine()
         
         self.workflow = BookingWorkflow(base_agent, self.decision_engine)

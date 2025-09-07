@@ -41,9 +41,7 @@ from dataclasses import dataclass
 from playwright.sync_api import sync_playwright, Page, Browser
 import google.generativeai as genai
 
-# Configure Google AI with API key from environment variables
-# This allows the agent to make intelligent decisions about booking actions
-genai.configure(api_key=os.getenv("GOOGLE_API_KEY"))
+# Google AI will be configured in the constructor when the agent is initialized
 
 # ============================================================================
 # DATA STRUCTURES
@@ -146,14 +144,43 @@ class BookingAgent:
                     - 1000: 1 second delay (good for debugging)
                     - Higher values: Slower execution (better for observation)
         
-        Raises:
-            Exception: If Google AI API key is not configured
+        Note:
+            If Google AI API key is not configured, the agent will use fallback
+            date parsing instead of AI-powered parsing.
         """
         self.headless = headless
         self.slow_mo = slow_mo
+        self.playwright = None
         self.browser: Optional[Browser] = None
         self.page: Optional[Page] = None
-        self.model = genai.GenerativeModel('gemini-1.5-flash')
+        
+        # Initialize AI model with proper API configuration
+        self.model = None
+        self.ai_available = True  # Assume AI is available until proven otherwise
+        
+        # Get API key
+        api_key = os.getenv("GOOGLE_API_KEY")
+        if not api_key:
+            print("⚠️ Google API key not found - using fallback date parsing")
+            self.ai_available = False
+            return
+            
+        try:
+            # Configure the API key
+            genai.configure(api_key=api_key)
+            # Initialize the model
+            self.model = genai.GenerativeModel('gemini-1.5-flash')
+            print("🤖 AI model initialized successfully with API key")
+            
+            # Test the model to make sure it works
+            test_response = self.model.generate_content('Test')
+            if not test_response or not test_response.text:
+                raise Exception("Model returned empty response")
+                
+        except Exception as e:
+            print(f"⚠️ AI model initialization failed: {e} - using fallback date parsing")
+            self.model = None
+            self.ai_available = False
         
         # Tool registry for function-calling approach
         self.tools: Dict[str, Callable] = {}
@@ -181,7 +208,20 @@ class BookingAgent:
     
     def start_browser(self):
         """Start the browser session"""
-        if self.browser is None:
+        try:
+            # Clean up existing session if any
+            if self.browser:
+                try:
+                    self.browser.close()
+                except:
+                    pass
+            if self.playwright:
+                try:
+                    self.playwright.stop()
+                except:
+                    pass
+            
+            # Start fresh session
             self.playwright = sync_playwright().start()
             self.browser = self.playwright.chromium.launch(
                 headless=self.headless,
@@ -190,6 +230,10 @@ class BookingAgent:
             self.page = self.browser.new_page()
             self.page.set_default_timeout(30000)
             print("🌐 Browser session started")
+        except Exception as e:
+            print(f"❌ Failed to start browser: {e}")
+            self.browser = None
+            self.page = None
     
     def stop_browser(self):
         """Stop the browser session"""
@@ -461,19 +505,45 @@ class BookingAgent:
             date: Alternative parameter name (for AI flexibility)
         """
         try:
-            if not self.page:
-                return {"success": False, "error": "No active browser session"}
+            # Ensure browser session is active
+            if not self.page or not self.browser:
+                print("🔄 Restarting browser session...")
+                self.start_browser()
+                if not self.page:
+                    return {"success": False, "error": "Failed to start browser session"}
             
-            # Handle different parameter names and relative dates
+            # Check if page is still valid
+            try:
+                self.page.url  # This will raise an exception if page is closed
+            except Exception as e:
+                print(f"🔄 Page context lost, restarting browser: {e}")
+                self.start_browser()
+                if not self.page:
+                    return {"success": False, "error": "Failed to restart browser session"}
+            
+            # Ensure we're on the booking page
+            if "skedda.com/booking" not in self.page.url:
+                print("🔄 Navigating to booking page...")
+                self.page.goto("https://ocbadminton.skedda.com/booking")
+                self.page.wait_for_load_state("domcontentloaded")
+                time.sleep(2)
+            
+            # Handle different parameter names
             final_date = target_date or date
             if not final_date:
                 return {"success": False, "error": "No date provided"}
             
-            # Convert relative dates
-            if final_date.lower() == "tomorrow":
-                final_date = (datetime.now() + timedelta(days=1)).strftime("%Y-%m-%d")
-            elif final_date.lower() == "today":
-                final_date = datetime.now().strftime("%Y-%m-%d")
+            # Use AI to parse dates
+            if not self.ai_available or not self.model:
+                return {"success": False, "error": "AI is required for date parsing"}
+            
+            # Parse date with AI
+            final_date = self._parse_date_with_ai(final_date)
+            if not final_date:
+                return {"success": False, "error": f"AI failed to parse date: {final_date}"}
+            
+            # AI now always returns actual dates in YYYY-MM-DD format
+            # No need for additional conversion
             
             print(f"📅 Changing date to: {final_date}")
             
@@ -805,8 +875,28 @@ class BookingAgent:
             >>> print(f"Found {result['available_slots']} available slots")
         """
         try:
-            if not self.page:
-                return {"success": False, "error": "No active browser session"}
+            # Ensure browser session is active
+            if not self.page or not self.browser:
+                print("🔄 Restarting browser session...")
+                self.start_browser()
+                if not self.page:
+                    return {"error": "Failed to start browser session"}
+            
+            # Check if page is still valid
+            try:
+                self.page.url  # This will raise an exception if page is closed
+            except Exception as e:
+                print(f"🔄 Page context lost, restarting browser: {e}")
+                self.start_browser()
+                if not self.page:
+                    return {"error": "Failed to restart browser session"}
+            
+            # Ensure we're on the booking page
+            if "skedda.com/booking" not in self.page.url:
+                print("🔄 Navigating to booking page...")
+                self.page.goto("https://ocbadminton.skedda.com/booking")
+                self.page.wait_for_load_state("domcontentloaded")
+                time.sleep(2)
             
             # Change date if specified
             if date:
@@ -852,8 +942,24 @@ class BookingAgent:
             available_slots = []
             conflicted_slots = []
             
+            # Get current date to check if it's a weekday
+            from datetime import datetime
+            current_date = datetime.now()
+            if date:
+                try:
+                    current_date = datetime.strptime(date, "%Y-%m-%d")
+                except:
+                    pass
+            
+            is_weekday = current_date.weekday() < 5  # Monday=0, Sunday=6
+            
             for slot in all_possible_slots:
                 has_conflict = False
+                
+                # Filter out 8:00 AM - 9:00 AM slots for weekdays
+                if is_weekday and slot.get('is_weekday_8am_slot', False):
+                    conflicted_slots.append(slot)
+                    continue
                 
                 # Check if this slot conflicts with any booked range
                 for booked in booked_ranges:
@@ -898,13 +1004,16 @@ class BookingAgent:
             # Get visitor mode info
             visitor_mode_info = self.detect_visitor_mode()
             
+            # Get the correct date - use the date parameter or current state
+            display_date = date or self.current_state.get("current_date", "Unknown")
+            
             return {
                 "slots": all_slots_for_result,
                 "total_slots": len(all_possible_slots),
                 "available_slots": len(available_slots),
                 "booked_slots": len(booked_ranges),
                 "visitor_mode": visitor_mode_info.get("visitor_mode", False),
-                "date": visitor_mode_info.get("date", "Unknown")
+                "date": display_date
             }
         
         except Exception as e:
@@ -1161,6 +1270,7 @@ class BookingAgent:
         2. All slots are at least 1 hour long (minimum booking duration)
         3. All 8 courts are covered
         4. Time format is consistent (12-hour format with AM/PM)
+        5. 8:00 AM - 9:00 AM slots are filtered out for weekdays (Monday-Friday)
         
         This comprehensive approach allows for perfect conflict detection by checking
         every possible slot against existing bookings.
@@ -1201,19 +1311,169 @@ class BookingAgent:
                 start_12h = current_time.strftime("%I:%M %p").lstrip('0').replace(' 0', ' ')
                 end_12h = end_time.strftime("%I:%M %p").lstrip('0').replace(' 0', ' ')
                 
+                # Filter out 8:00 AM - 9:00 AM slots for weekdays (Monday-Friday)
+                # Check if this is a weekday 8:00 AM - 9:00 AM slot
+                is_weekday_8am_slot = (
+                    current_time.hour == 8 and 
+                    current_time.minute == 0 and 
+                    duration_minutes == 60 and
+                    end_time.hour == 9 and 
+                    end_time.minute == 0
+                )
+                
                 # Create slot for each court
                 for court in courts:
-                    slots.append({
+                    slot = {
                         "court": court,
                         "start_time": start_12h,
                         "end_time": end_12h,
                         "duration_minutes": duration_minutes
-                    })
+                    }
+                    
+                    # Add weekday filter flag for later use
+                    slot["is_weekday_8am_slot"] = is_weekday_8am_slot
+                    
+                    slots.append(slot)
             
             # Move to next 30-minute interval
             current_time += timedelta(minutes=30)
         
         return slots
+    
+    def _is_iso_date(self, date_str: str) -> bool:
+        """Check if the date string is already in YYYY-MM-DD format"""
+        try:
+            from datetime import datetime
+            datetime.strptime(date_str, "%Y-%m-%d")
+            return True
+        except ValueError:
+            return False
+    
+    def _parse_date_with_ai(self, date_text: str) -> str:
+        """Use AI to parse natural language dates into YYYY-MM-DD format"""
+        try:
+            # Check if AI is available
+            if not self.ai_available or not self.model:
+                print("⚠️ AI not available, using fallback parsing")
+                return None
+            
+            from datetime import datetime, timedelta
+            
+            # Get current date context
+            today = datetime.now()
+            tomorrow = today + timedelta(days=1)
+            
+            prompt = f"""
+            You are a date parsing expert. Convert the following date text into YYYY-MM-DD format.
+            
+            CRITICAL REQUIREMENTS:
+            1. ALWAYS return a date in YYYY-MM-DD format - NEVER return "today" or "tomorrow" as text
+            2. If no year is mentioned, assume 2025
+            3. Convert relative dates to actual dates using the current date context
+            4. Handle all date formats: ordinal numbers, month names, abbreviations, etc.
+            5. Be flexible with spacing, punctuation, and case
+            6. Return ONLY the date in YYYY-MM-DD format - nothing else
+            
+            Date text to parse: "{date_text}"
+            
+            Current date context: {today.strftime('%Y-%m-%d (%A)')}
+            Tomorrow's date: {tomorrow.strftime('%Y-%m-%d (%A)')}
+            
+            Examples of what you should return:
+            - "9th september" -> "2025-09-09"
+            - "september 9th" -> "2025-09-09"
+            - "9th sep" -> "2025-09-09"
+            - "sep 9" -> "2025-09-09"
+            - "9/8" -> "2025-09-08"
+            - "9-8" -> "2025-09-08"
+            - "tomorrow" -> "{tomorrow.strftime('%Y-%m-%d')}"
+            - "today" -> "{today.strftime('%Y-%m-%d')}"
+            - "next monday" -> calculate the actual date
+            - "monday" -> next monday's date
+            - "9th september 2026" -> "2026-09-09"
+            
+            Return ONLY the date in YYYY-MM-DD format:
+            """
+            
+            response = self.model.generate_content(prompt)
+            parsed_date = response.text.strip()
+            
+            # Clean up the response (remove any extra text)
+            parsed_date = parsed_date.split('\n')[0].strip()
+            
+            # Validate the parsed date
+            if self._is_iso_date(parsed_date):
+                return parsed_date
+            else:
+                print(f"⚠️ AI returned invalid date format: '{parsed_date}' for input: '{date_text}'")
+                return None
+                
+        except Exception as e:
+            print(f"❌ AI date parsing failed: {e}")
+            return None
+    
+    def _fallback_date_parse(self, date_text: str) -> str:
+        """Fallback date parsing when AI fails"""
+        try:
+            from datetime import datetime, timedelta
+            import re
+            
+            date_text = date_text.lower().strip()
+            
+            # Handle relative dates
+            if date_text == "tomorrow":
+                return (datetime.now() + timedelta(days=1)).strftime("%Y-%m-%d")
+            elif date_text == "today":
+                return datetime.now().strftime("%Y-%m-%d")
+            
+            # Handle month names
+            months = {
+                'january': 1, 'jan': 1, 'february': 2, 'feb': 2, 
+                'march': 3, 'mar': 3, 'april': 4, 'apr': 4,
+                'may': 5, 'june': 6, 'jun': 6, 'july': 7, 'jul': 7, 
+                'august': 8, 'aug': 8, 'september': 9, 'sep': 9, 'sept': 9,
+                'october': 10, 'oct': 10, 'november': 11, 'nov': 11, 
+                'december': 12, 'dec': 12
+            }
+            
+            # Try patterns like "9th sep", "sep 9", "9 sep"
+            patterns = [
+                r'(\d{1,2})(?:st|nd|rd|th)?\s+(january|february|march|april|may|june|july|august|september|october|november|december|jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec)',
+                r'(january|february|march|april|may|june|july|august|september|october|november|december|jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec)\s+(\d{1,2})(?:st|nd|rd|th)?',
+                r'(\d{1,2})\s+(january|february|march|april|may|june|july|august|september|october|november|december|jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec)',
+                r'(january|february|march|april|may|june|july|august|september|october|november|december|jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec)\s+(\d{1,2})'
+            ]
+            
+            for pattern in patterns:
+                match = re.search(pattern, date_text)
+                if match:
+                    groups = match.groups()
+                    if len(groups) == 2:
+                        if groups[0].isdigit():
+                            day, month_name = groups
+                        else:
+                            month_name, day = groups
+                        
+                        month_num = months.get(month_name.lower())
+                        if month_num:
+                            # Remove ordinal suffixes
+                            day = re.sub(r'(st|nd|rd|th)', '', day)
+                            # Default to 2025
+                            return f"2025-{month_num:02d}-{int(day):02d}"
+            
+            # Try MM/DD format
+            if '/' in date_text:
+                parts = date_text.split('/')
+                if len(parts) == 2 and parts[0].isdigit() and parts[1].isdigit():
+                    month, day = parts
+                    return f"2025-{int(month):02d}-{int(day):02d}"
+            
+            print(f"⚠️ Fallback parsing failed for: {date_text}")
+            return None
+            
+        except Exception as e:
+            print(f"❌ Fallback date parsing failed: {e}")
+            return None
     
     def _time_ranges_overlap(self, start1: str, end1: str, start2: str, end2: str) -> bool:
         """
@@ -1508,6 +1768,10 @@ If the booking is complete or impossible, include "completed": true and "final_m
     def _get_ai_decision(self, context: str) -> str:
         """Get decision from the AI model"""
         try:
+            if not self.ai_available or not self.model:
+                print("⚠️ AI not available, using fallback decision")
+                return f'{{"action": "get_available_slots", "parameters": {{}}, "reasoning": "AI not available, getting available slots", "completed": true}}'
+            
             response = self.model.generate_content(context)
             print(f"🧠 AI Response: {response.text[:200]}...")
             return response.text

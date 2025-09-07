@@ -59,9 +59,17 @@ tmp/
 *.jpeg
 *.gif
 debug_*.py
-test_*.py
-*_test.py
 *_debug.py
+
+# Backup files
+*_backup.py
+*_backup.*
+
+# HTML analysis files
+*.html
+
+# Allow important test files
+!tests/test_*.py
 
 # Environment variables
 .env
